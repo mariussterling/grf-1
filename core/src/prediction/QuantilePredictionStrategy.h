@@ -21,7 +21,6 @@
 
 #include <cstddef>
 #include <unordered_map>
-#include "Eigen/Dense"
 #include "commons/Data.h"
 #include "prediction/DefaultPredictionStrategy.h"
 #include "prediction/PredictionValues.h"

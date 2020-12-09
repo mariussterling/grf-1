@@ -30,11 +30,13 @@ validate_X <- function(X, allow.na = FALSE) {
   has.missing.values
 }
 
-validate_observations <- function(V, X) {
-  if (is.matrix(V) && ncol(V) == 1) {
-    V <- as.vector(V)
-  } else if (!is.vector(V)) {
-    stop(paste("Observations (W, Y, Z or D) must be vectors."))
+validate_observations <- function(V, X, allow.matrix = FALSE) {
+  if (!allow.matrix) {
+    if (is.matrix(V) && ncol(V) == 1) {
+      V <- as.vector(V)
+    } else if (!is.vector(V)) {
+      stop(paste("Observations (W, Y, Z or D) must be vectors."))
+    }
   }
 
   if (!is.numeric(V) && !is.logical(V)) {
@@ -48,7 +50,7 @@ validate_observations <- function(V, X) {
     stop("The vector of observations (W, Y, Z or D) contains at least one NA.")
   }
 
-  if (length(V) != nrow(X)) {
+  if (NROW(V) != nrow(X)) {
     stop("length of observation (W, Y, Z or D) does not equal nrow(X).")
   }
   V
@@ -174,6 +176,7 @@ validate_sample_weights <- function(sample.weights, X) {
 
 #' @importFrom Matrix Matrix cBind
 #' @importFrom methods new
+# Indices are offset by 1 for C++.
 create_train_matrices <- function(X,
                                   outcome = NULL,
                                   treatment = NULL,
@@ -185,30 +188,30 @@ create_train_matrices <- function(X,
   default.data <- matrix(nrow = 0, ncol = 0)
   sparse.data <- new("dgCMatrix", Dim = c(0L, 0L))
   out <- list()
-  i <- 0
+  offset <- ncol(X) - 1
   if (!is.null(outcome)) {
-    i <- i + 1
-    out[["outcome.index"]] <- ncol(X) + i
+    out[["outcome.index"]] <- (offset + 1):(offset + NCOL(outcome))
+    offset <- offset + NCOL(outcome)
   }
   if (!is.null(treatment)) {
-    i <- i + 1
-    out[["treatment.index"]] <- ncol(X) + i
+    out[["treatment.index"]] <- offset + 1
+    offset <- offset + 1
   }
   if (!is.null(instrument)) {
-    i <- i + 1
-    out[["instrument.index"]] <- ncol(X) + i
+    out[["instrument.index"]] <- offset + 1
+    offset <- offset + 1
   }
   if (!is.null(survival.numerator)) {
-    i <- i + 1
-    out[["causal.survival.numerator.index"]] <- ncol(X) + i
+    out[["causal.survival.numerator.index"]] <- offset + 1
+    offset <- offset + 1
   }
   if (!is.null(survival.denominator)) {
-    i <- i + 1
-    out[["causal.survival.denominator.index"]] <- ncol(X) + i
+    out[["causal.survival.denominator.index"]] <- offset + 1
+    offset <- offset + 1
   }
   if (!is.null(censor)) {
-    i <- i + 1
-    out[["censor.index"]] <- ncol(X) + i
+    out[["censor.index"]] <- offset + 1
+    offset <- offset + 1
   }
   # Forest bindings without sample weights: sample.weights = FALSE
   # Forest bindings with sample weights:
@@ -217,8 +220,7 @@ create_train_matrices <- function(X,
   if (is.logical(sample.weights)) {
     sample.weights <- NULL
   } else {
-    i <- i + 1
-    out[["sample.weight.index"]] <- ncol(X) + i
+    out[["sample.weight.index"]] <- offset + 1
     if (is.null(sample.weights)) {
       out[["use.sample.weights"]] <- FALSE
     } else {
@@ -289,4 +291,20 @@ observation_weights <- function(forest) {
 do.call.rcpp = function(what, args, quote = FALSE, envir = parent.frame()) {
   names(args) = gsub("\\.", "_", names(args))
   do.call(what, args, quote, envir)
+}
+
+validate_subset <- function(forest, subset) {
+  if (is.null(subset)) {
+    subset <- 1:length(forest$Y.orig)
+  }
+  if (class(subset) == "logical" && length(subset) == length(forest$Y.orig)) {
+    subset <- which(subset)
+  }
+  if (!all(subset %in% 1:length(forest$Y.orig))) {
+    stop(paste(
+      "If specified, subset must be a vector contained in 1:n,",
+      "or a boolean vector of length n."
+    ))
+  }
+  subset
 }

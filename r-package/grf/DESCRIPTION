@@ -28,9 +28,10 @@ Imports:
     methods,
     Rcpp (>= 0.12.15),
     sandwich (>= 2.4-0)
-RoxygenNote: 7.0.2
+RoxygenNote: 7.1.1
 Suggests:
     DiagrammeR,
-    testthat
+    testthat,
+    MASS
 SystemRequirements: GNU make
 URL: https://github.com/grf-labs/grf

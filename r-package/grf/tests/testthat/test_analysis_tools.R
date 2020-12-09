@@ -17,7 +17,7 @@ test_that("examining a tree gives reasonable results", {
   expect_lt(num.nodes, n)
 
   split.vars <- unlist(sapply(quantile.tree$nodes, function(node) node$split_variable))
-  expect_true(all(split.vars >= 0 && split.vars <= 40))
+  expect_true(all(split.vars >= 0 & split.vars <= 40))
 
   left.children <- unlist(sapply(quantile.tree$nodes, function(node) node$left_child))
   expect_equal(seq(2, num.nodes, 2), left.children)
@@ -205,4 +205,29 @@ test_that("result of get_tree is consistent with internal tree representation (c
       expect_equal(length(leaf.samples[[i]]), 0)
     }
   }
+})
+
+test_that("get_leaf_nodes works as expected", {
+  n <- 200
+  p <- 5
+  X <- matrix(rnorm(n * p), n, p)
+  Y <- X[, 1] * rnorm(n)
+  X[1:30, 1] <- NaN
+  X[10:20, 3] <- NaN
+  r.forest <- regression_forest(X, Y,
+                                num.trees = 1,
+                                ci.group.size = 1,
+                                honesty = FALSE,
+                                sample.fraction = 1)
+  Y.hat <- predict(r.forest, X)$predictions
+
+  tree <- get_tree(r.forest, 1)
+  leaf.nodes <- get_leaf_node(tree, X)
+  leaf.samples <- get_leaf_node(tree, X, node.id = FALSE)
+  leaf.predictions <- aggregate(Y, list(leaf = leaf.nodes), mean)
+  leaf.predictions.alternative <- sapply(leaf.samples, function(samples) mean(Y[samples]))
+  Y.hat.leaves <- leaf.predictions$x[match(leaf.nodes, leaf.predictions$leaf)]
+
+  expect_equal(unname(leaf.predictions.alternative), leaf.predictions$x)
+  expect_equal(Y.hat.leaves, Y.hat)
 })

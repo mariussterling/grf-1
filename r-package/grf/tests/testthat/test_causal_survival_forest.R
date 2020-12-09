@@ -3,7 +3,7 @@ library(grf)
 test_that("causal survival forest is well-calibrated", {
   n <- 1000
   p <- 5
-  data <- generate_survival_data(n, p, tau = 1, n.mc = 5000, dgp = "simple1")
+  data <- generate_survival_data(n, p, Y.max = 1, n.mc = 5000, dgp = "simple1")
   cs.forest <- causal_survival_forest(data$X, data$Y, data$W, data$D, num.trees = 500)
   cs.pred <- predict(cs.forest)
 
@@ -11,7 +11,7 @@ test_that("causal survival forest is well-calibrated", {
 
   X.test <- matrix(0.5, 10, p)
   X.test[, 1] <- seq(0, 1, length.out = 10)
-  true.effect.test <- generate_survival_data(10, p, tau = 1, X = X.test, n.mc = 5000, dgp = "simple1")$cate
+  true.effect.test <- generate_survival_data(10, p, Y.max = 1, X = X.test, n.mc = 5000, dgp = "simple1")$cate
   cs.pred.test <- predict(cs.forest, X.test)
   mse.test <- mean((cs.pred.test$predictions - true.effect.test)^2)
 
@@ -22,7 +22,7 @@ test_that("causal survival forest is well-calibrated", {
 test_that("causal survival forest variance estimates are decent", {
   n <- 1000
   p <- 5
-  data <- generate_survival_data(n, p, tau = 1, n.mc = 5000, dgp = "simple1")
+  data <- generate_survival_data(n, p, Y.max = 1, n.mc = 5000, dgp = "simple1")
   true.effect <- data$cate
   cs.forest <- causal_survival_forest(data$X, data$Y, data$W, data$D, num.trees = 500)
   cs.pred <- predict(cs.forest, estimate.variance = TRUE)
@@ -34,7 +34,7 @@ test_that("causal survival forest variance estimates are decent", {
   X.test <- matrix(0.5, 10, p)
   X.test[, 1] <- seq(0, 1, length.out = 10)
   true.effect.test <- rep(NA, 10)
-  true.effect.test <- generate_survival_data(10, p, tau = 1, X = X.test, n.mc = 5000, dgp = "simple1")$cate
+  true.effect.test <- generate_survival_data(10, p, Y.max = 1, X = X.test, n.mc = 5000, dgp = "simple1")$cate
   cs.pred.test <- predict(cs.forest, X.test, estimate.variance = TRUE)
 
   ub.test <- cs.pred.test$predictions + 2 * sqrt(cs.pred.test$variance.estimates)
@@ -96,22 +96,24 @@ test_that("nuisance argument handling in a causal survival forest works as expec
   sf.survival <- survival_forest(cbind(data$X, data$W), data$Y, data$D, num.trees = 200)
   # S1.hat and S0.hat are not proper OOB estimates but should be OK for this testing purpose.
   S1.hat <- predict(sf.survival, cbind(data$X, rep(1, n)))
+  E1.hat <- expected_survival(S1.hat$predictions, sf.survival$failure.times)
   S0.hat <- predict(sf.survival, cbind(data$X, rep(0, n)))
+  E0.hat <- expected_survival(S0.hat$predictions, sf.survival$failure.times)
   S.hat <- predict(sf.survival, failure.times = sort(unique(data$Y)))
   sf.censor <- survival_forest(cbind(data$X, data$W), data$Y, 1 - data$D, num.trees = 200)
   C.hat <- predict(sf.censor, failure.times = sort(unique(data$Y)), prediction.type = "Nelson-Aalen")
 
   cs.forest1 <- causal_survival_forest(data$X, data$Y, data$W, data$D, num.trees = 200,
-                                       S1.hat = S1.hat)
+                                       E1.hat = E1.hat)
   cs.forest2 <- causal_survival_forest(data$X, data$Y, data$W, data$D, num.trees = 200,
-                                       S0.hat = S0.hat)
+                                       E0.hat = E0.hat)
   cs.forest3 <- causal_survival_forest(data$X, data$Y, data$W, data$D, num.trees = 200,
                                        S.hat = S.hat$predictions)
   cs.forest4 <- causal_survival_forest(data$X, data$Y, data$W, data$D, num.trees = 200,
                                        C.hat = C.hat$predictions)
   cs.forest5 <- causal_survival_forest(data$X, data$Y, data$W, data$D, num.trees = 200,
-                                       S1.hat = S1.hat,
-                                       S0.hat = S0.hat,
+                                       E1.hat = E1.hat,
+                                       E0.hat = E0.hat,
                                        S.hat = S.hat$predictions,
                                        C.hat = C.hat$predictions)
 

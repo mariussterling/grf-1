@@ -1,11 +1,43 @@
 #' Causal survival forest (experimental)
 #'
 #' Trains a causal survival forest that can be used to estimate
-#' conditional average treatment effects theta(X). When the treatment assigment
-#' is unconfounded, we have theta(X) = E[T(1) - T(0) | X = x],
-#' where T is the survival time up to a fixed maximum follow-up time.
-#' T(1) and T(0) are potental outcomes corresponding to the two possible
+#' conditional average treatment effects tau(X). When the treatment assignment
+#' is unconfounded, we have tau(X) = E[Y(1) - Y(0) | X = x],
+#' where Y is the survival time up to a fixed maximum follow-up time.
+#' Y(1) and Y(0) are potental outcomes corresponding to the two possible
 #' treatment states.
+#'
+#' @section Statistical details:
+#' An important assumption for identifying the conditional average treatment effect tau(X)
+#' is that there exists a fixed positive constant M such that the probability of observing an
+#' event time past the maximum follow-up time Y.max is at least M (formally, we assume: P(Y
+#' >= Y.max | X) > M).
+#'
+#' This means that the individual censoring probabilities (by default estimated using a
+#' survival_forest on D' = 1 - D) should not get too low. This function provides a warning
+#' if these estimates get below 0.2, if they drop all the way down to below 0.05, we emit a
+#' stronger warning that you can not expect causal survival forest to deliver reliable
+#' estimates.
+#'
+#' The practical issue is that we can not reliably extrapolate the survival curves
+#' sufficiently far into the future (where most observations will be censored). A workaround
+#' is to re-define the estimand as the treatment effect up to some suitable maximum
+#' follow-up time Y.max. One can do this in practice by thresholding Y before running
+#' causal_survival_forest: D[Y >= Y.max] = 1 and Y[Y >= Y.max] = Y.max. The online vignette on
+#' survival data has more details.
+#'
+#' @section Computational details:
+#' Causal survival forest computes two nuisance components, the estimated survival
+#' and censoring curves (S.hat and C.hat). Recall that the Kaplan-Meier or
+#' Nelson-Aalen estimates of the survival curve is a step function that only
+#' changes at points at which there is an event D = 1 (or D' = 1 - D for the
+#' censoring curve). For very dense event data Y there may not be any accuracy
+#' benefit to fitting these curves on the complete grid compared with the
+#' computational cost, which scales as O(m*n) in each tree node (where
+#' m is the number of events in the node, and n the number of split points).
+#'
+#' The suggested resolution to this issue is to round or relabel the event data Y
+#' to a coarser resolution. The argument `failure.times` can be used for this purpose.
 #'
 #' @param X The covariates.
 #' @param Y The event time (may be negative).
@@ -13,14 +45,12 @@
 #' @param D The event type (0: censoring, 1: failure).
 #' @param W.hat Estimates of the treatment propensities E[W | Xi]. If W.hat = NULL,
 #'              these are estimated using a separate regression forest. Default is NULL.
-#' @param S1.hat Estimates of the conditional survival function S(t, x, 1) = P[Y > t | X = x, W = 1].
-#'  If S1.hat is NULL, this is estimated using a survival forest (S-learner). If provided:
-#'  a list with first element: N*t matrix of survival estimates and second element: t-vector of event times
-#'  the survival curve is evaluated at. Default is NULL.
-#' @param S0.hat Estimates of the conditional survival function S(t, x, 0) = P[Y > t | X = x, W = 0].
-#'  If S0.hat is NULL, this is estimated using a survival forest (S-learner). If provided:
-#'  a list with first element: N*t matrix of survival estimates and second element: t-vector of event times
-#'  the survival curve is evaluated at. Default is NULL.
+#' @param E1.hat Estimates of the expected survival time conditional on being treated
+#'  E[Y | X = x, W = 1]. If E1.hat is NULL, then this is estimated with an S-learner using
+#'  a survival forest.
+#' @param E0.hat Estimates of the expected survival time conditional on being a control unit
+#'  E[Y | X = x, W = 0]. If E0.hat is NULL, then this is estimated with an S-learner using
+#'  a survival forest.
 #' @param S.hat Estimates of the conditional survival function S(t, x, w) = P[Y > t | X = x, W = w].
 #'  If S.hat is NULL, this is estimated using a survival forest. If provided:
 #'  a N*T matrix of survival estimates. The grid should correspond to the T unique events in Y.
@@ -33,8 +63,8 @@
 #'  If lambda.C.hat is NULL, this is estimated from C.hat using a forward difference. If provided:
 #'  a matrix of same dimensionality has C.hat.
 #'  Default is NULL.
-#' @param failure.times A vector of event times to fit the survival curves at. If NULL, then all the observed
-#'  failure times are used. This speeds up forest estimation by constraining the event grid. Observed event
+#' @param failure.times A vector of event times to fit the survival curves at. If NULL, then all the unique
+#'  event times are used. This speeds up forest estimation by constraining the event grid. Observed event
 #'  times are rounded down to the last sorted occurance less than or equal to the specified failure time.
 #'  The time points should be in increasing order.
 #'  Default is NULL.
@@ -105,8 +135,8 @@
 #' p <- 5
 #' X <- matrix(runif(n * p), n, p)
 #' W <- rbinom(n, 1, 0.5)
-#' tau <- 1
-#' failure.time <- pmin(rexp(n) * X[, 1] + W, tau)
+#' Y.max <- 1
+#' failure.time <- pmin(rexp(n) * X[, 1] + W, Y.max)
 #' censor.time <- 2 * runif(n)
 #' Y <- pmin(failure.time, censor.time)
 #' D <- as.integer(failure.time <= censor.time)
@@ -121,13 +151,16 @@
 #' r.monte.carlo <- rexp(5000)
 #' cate <- rep(NA, 10)
 #' for (i in 1:10) {
-#'   cate[i] <- mean(pmin(r.monte.carlo * X.test[i, 1] + 1, tau) -
-#'                     pmin(r.monte.carlo * X.test[i, 1], tau))
+#'   cate[i] <- mean(pmin(r.monte.carlo * X.test[i, 1] + 1, Y.max) -
+#'                     pmin(r.monte.carlo * X.test[i, 1], Y.max))
 #' }
 #' plot(X.test[, 1], cate, type = 'l', col = 'red')
 #' points(X.test[, 1], cs.pred$predictions)
 #' lines(X.test[, 1], cs.pred$predictions + 2 * sqrt(cs.pred$variance.estimates), lty = 2)
 #' lines(X.test[, 1], cs.pred$predictions - 2 * sqrt(cs.pred$variance.estimates), lty = 2)
+#'
+#' # Compute the best linear projection on the first covariate.
+#' best_linear_projection(cs.forest, X[, 1])
 #'
 #' # Train the forest on a less granular grid.
 #' cs.forest.grid <- causal_survival_forest(X, Y, W, D,
@@ -139,8 +172,8 @@
 #' @export
 causal_survival_forest <- function(X, Y, W, D,
                                    W.hat = NULL,
-                                   S1.hat = NULL,
-                                   S0.hat = NULL,
+                                   E1.hat = NULL,
+                                   E0.hat = NULL,
                                    S.hat = NULL,
                                    C.hat = NULL,
                                    lambda.C.hat = NULL,
@@ -187,6 +220,12 @@ causal_survival_forest <- function(X, Y, W, D,
   num.samples <- nrow(X)
   if (num.events <= 2) {
     stop("The number of distinct event times should be more than 2.")
+  }
+  if (num.samples > 5000 && num.events / num.samples > 0.1) {
+    warning(paste0("The number of events are more than 10% of the sample size. ",
+                   "To reduce the computational burden of fitting survival and ",
+                   "censoring curves, consider rounding the event values `Y` or ",
+                   "supplying a coarser grid with the `failure.times` argument. "))
   }
 
   args.orthog <- list(X = X,
@@ -235,10 +274,7 @@ causal_survival_forest <- function(X, Y, W, D,
                         seed = seed)
 
   # The survival function conditioning on being treated S(t, x, 1) estimated with an "S-learner".
-  nuisance.msg <- paste("if provided, this argument must be a list with first element:",
-                        "the N*t matrix of survival probability estimates and second element:",
-                        "a t-vector of event times corresponding to the survival estimates.")
-  if (is.null(S1.hat)) {
+  if (is.null(E1.hat)) {
     sf.survival <- do.call(survival_forest, c(list(X = cbind(X, W), Y = Y, D = D), args.nuisance))
     S1.failure.times <- S0.failure.times <- S.failure.times <- sf.survival$failure.times
     # Computing OOB estimates for modified training samples is not a workflow we have implemented,
@@ -247,18 +283,13 @@ causal_survival_forest <- function(X, Y, W, D,
     sf.survival[["X.orig"]] <- cbind(X, rep(1, num.samples))
     S1.hat <- predict(sf.survival)$predictions
     sf.survival[["X.orig"]] <- X.orig
-  } else if (is.list(S1.hat) && length(S1.hat) == 2) {
-    S1.failure.times <- S1.hat[[2]]
-    S1.hat <- S1.hat[[1]]
-    if (NCOL(S1.hat) != length(S1.failure.times) || NROW(S1.hat) != num.samples) {
-      stop(paste("S1.hat:", nuisance.msg))
-    }
-  } else {
-    stop(paste("S1.hat:", nuisance.msg))
+    E1.hat <- expected_survival(S1.hat, S1.failure.times)
+  } else if (length(E1.hat) != num.samples) {
+    stop("E1.hat has incorrect length.")
   }
 
   # The survival function conditioning on being a control unit S(t, x, 0) estimated with an "S-learner".
-  if (is.null(S0.hat)) {
+  if (is.null(E0.hat)) {
     if (!exists("sf.survival", inherits = FALSE)) {
       sf.survival <- do.call(survival_forest, c(list(X = cbind(X, W), Y = Y, D = D), args.nuisance))
       S0.failure.times <- S.failure.times <- sf.survival$failure.times
@@ -267,18 +298,12 @@ causal_survival_forest <- function(X, Y, W, D,
     sf.survival[["X.orig"]] <- cbind(X, rep(0, num.samples))
     S0.hat <- predict(sf.survival)$predictions
     sf.survival[["X.orig"]] <- X.orig
-  } else if (is.list(S0.hat) && length(S0.hat) == 2) {
-    S0.failure.times <- S0.hat[[2]]
-    S0.hat <- S0.hat[[1]]
-    if (NCOL(S0.hat) != length(S0.failure.times) || NROW(S0.hat) != num.samples) {
-      stop(paste("S0.hat:", nuisance.msg))
-    }
-  } else {
-    stop(paste("S0.hat:", nuisance.msg))
+    E0.hat <- expected_survival(S0.hat, S0.failure.times)
+  } else if (length(E0.hat) != num.samples) {
+    stop("E0.hat has incorrect length.")
   }
   # Compute m(x) = e(X) E[T | X, W = 1] + (1 - e(X)) E[T | X, W = 0]
-  m.hat <- W.hat * expected_survival(S1.hat, S1.failure.times) +
-            (1 - W.hat) * expected_survival(S0.hat, S0.failure.times)
+  m.hat <- W.hat * E1.hat + (1 - W.hat) * E0.hat
 
   # The conditional survival function S(t, x, w).
   if (is.null(S.hat)) {
@@ -310,16 +335,16 @@ causal_survival_forest <- function(X, Y, W, D,
 
  if (any(C.hat <= 0.05)) {
   warning(paste("Estimated censoring probabilites go as low as:", min(C.hat),
-                "- an identifying assumption is that there exist a fixed positve constant M",
-                "such that the probability of observing an event time past the maximum follow-up time tau",
-                "is at least M. Formally, we assume: P(Y >= tau | X) > M.",
+                "- an identifying assumption is that there exists a fixed positve constant M",
+                "such that the probability of observing an event time past the maximum follow-up time Y.max",
+                "is at least M. Formally, we assume: P(Y >= Y.max | X) > M.",
                 "This warning appears when M is less than 0.05, at which point causal survival forest",
                 "can not be expected to deliver reliable estimates."))
   } else if (any(C.hat < 0.2 & C.hat > 0.05)) {
     warning(paste("Estimated censoring probabilites are lower than 0.2.",
-                  "An identifying assumption is that there exist a fixed positve constant M",
-                  "such that the probability of observing an event time past the maximum follow-up time tau",
-                  "is at least M. Formally, we assume: P(Y >= tau | X) > M."))
+                  "An identifying assumption is that there exists a fixed positve constant M",
+                  "such that the probability of observing an event time past the maximum follow-up time Y.max",
+                  "is at least M. Formally, we assume: P(Y >= Y.max | X) > M."))
   }
 
   # Compute the pseudo outcomes
@@ -369,7 +394,7 @@ causal_survival_forest <- function(X, Y, W, D,
 
 #' Predict with a causal survival forest forest
 #'
-#' Gets estimates of theta(X) using a trained causal survival forest.
+#' Gets estimates of tau(X) using a trained causal survival forest.
 #'
 #' @param object The trained forest.
 #' @param newdata Points at which predictions should be made. If NULL, makes out-of-bag
@@ -379,7 +404,7 @@ causal_survival_forest <- function(X, Y, W, D,
 #'                matrix, and that the columns must appear in the same order.
 #' @param num.threads Number of threads used in training. If set to NULL, the software
 #'                    automatically selects an appropriate amount.
-#' @param estimate.variance Whether variance estimates for hat{theta}(x) are desired
+#' @param estimate.variance Whether variance estimates for hat{tau}(x) are desired
 #'                          (for confidence intervals).
 #' @param ... Additional arguments (currently ignored).
 #'
@@ -392,8 +417,8 @@ causal_survival_forest <- function(X, Y, W, D,
 #' p <- 5
 #' X <- matrix(runif(n * p), n, p)
 #' W <- rbinom(n, 1, 0.5)
-#' tau <- 1
-#' failure.time <- pmin(rexp(n) * X[, 1] + W, tau)
+#' Y.max <- 1
+#' failure.time <- pmin(rexp(n) * X[, 1] + W, Y.max)
 #' censor.time <- 2 * runif(n)
 #' Y <- pmin(failure.time, censor.time)
 #' D <- as.integer(failure.time <= censor.time)
@@ -408,13 +433,16 @@ causal_survival_forest <- function(X, Y, W, D,
 #' r.monte.carlo <- rexp(5000)
 #' cate <- rep(NA, 10)
 #' for (i in 1:10) {
-#'   cate[i] <- mean(pmin(r.monte.carlo * X.test[i, 1] + 1, tau) -
-#'                     pmin(r.monte.carlo * X.test[i, 1], tau))
+#'   cate[i] <- mean(pmin(r.monte.carlo * X.test[i, 1] + 1, Y.max) -
+#'                     pmin(r.monte.carlo * X.test[i, 1], Y.max))
 #' }
 #' plot(X.test[, 1], cate, type = 'l', col = 'red')
 #' points(X.test[, 1], cs.pred$predictions)
 #' lines(X.test[, 1], cs.pred$predictions + 2 * sqrt(cs.pred$variance.estimates), lty = 2)
 #' lines(X.test[, 1], cs.pred$predictions - 2 * sqrt(cs.pred$variance.estimates), lty = 2)
+#'
+#' # Compute the best linear projection on the first covariate.
+#' best_linear_projection(cs.forest, X[, 1])
 #'
 #' # Train the forest on a less granular grid.
 #' cs.forest.grid <- causal_survival_forest(X, Y, W, D,
@@ -460,7 +488,7 @@ predict.causal_survival_forest <- function(object,
   do.call(cbind.data.frame, ret[!empty])
 }
 
-#' Compute pseudo outcomes (based on the influence function of theta(X) for each unit)
+#' Compute pseudo outcomes (based on the influence function of tau(X) for each unit)
 #' used for CART splitting.
 #'
 #' We compute:
@@ -475,7 +503,7 @@ predict.causal_survival_forest <- function(object,
 #'
 #' Some useful properties:
 #' The expected survival time E[T] is the integral of the survival function S(t).
-#' The conditional expected survival time E[T | T >= y] is the integral of S(t + y) / S(y).
+#' The conditional expected survival time E[T | T >= y] is y + the integral of S(t + y) / S(y).
 #'
 #' @param S.hat Estimates of the conditional survival function S(t, x, w).
 #' @param C.hat Estimates of the conditional survival function for the censoring process S_C(t, x, w).
@@ -577,181 +605,4 @@ expected_survival <- function(S.hat, Y.grid) {
   grid.diff <- diff(c(0, Y.grid, max(Y.grid)))
 
   c(cbind(1, S.hat) %*% grid.diff)
-}
-
-#' Simulate survival data
-#'
-#' The following DGPs are available for benchmarking purposes, T is the failure time
-#' and C the censoring time:
-#' \itemize{
-#'   \item "simple1": T = X1*eps + W, C ~ U(0, 2) where eps ~ Exp(1) and tau = 1.
-#'   \item  "type1": T is drawn from an accelerated failure time model and C from a Cox model (scenario 1 in https://arxiv.org/abs/2001.09887)
-#'   \item  "type2": T is drawn from a proportional hazard model and C from a accelerated failure time (scenario 2 in https://arxiv.org/abs/2001.09887)
-#'   \item  "type3": T and C are drawn from a Poisson distribution  (scenario 3 in https://arxiv.org/abs/2001.09887)
-#'   \item  "type4": T and C are drawn from a Poisson distribution  (scenario 4 in https://arxiv.org/abs/2001.09887)
-#' }
-#' @param n The number of samples.
-#' @param p The number of covariates.
-#' @param tau The maximum follow-up time (optional).
-#' @param X The covariates (optional).
-#' @param n.mc The number of monte carlo draws to estimate the treatment effect with. Default is 10000.
-#' @param dgp The type of DGP.
-#'
-#' @return A list with entries:
-#'  `X`: the covariates, `Y`: the event times, `W`: the treatment indicator, `D`: the censoring indicator,
-#'  `cate`: the treatment effect estimated by monte carlo, `cate.sign`: the true sign of the cate for ITR comparison,
-#'  `dgp`: the dgp name, `tau`: the maximum follow-up time.
-#'
-#' @examples
-#' \donttest{
-#' # Generate data
-#' n <- 1000
-#' p <- 5
-#' data <- generate_survival_data(n, p)
-#' # Get true CATE on a test set
-#' X.test <- matrix(seq(0, 1, length.out = 5), 5, p)
-#' cate.test <- generate_survival_data(n, p, X = X.test)$cate
-#' }
-#'
-#' @importFrom stats dbeta rbinom rexp rnorm rpois
-#' @export
-generate_survival_data <- function(n, p, tau = NULL, X = NULL, n.mc = 10000,
-                                   dgp = c("simple1", "type1", "type2", "type3", "type4")) {
-  .minp <- c(simple1 = 1, type1 = 5, type2 = 5, type3 = 5, type4 = 5)
-  dgp <- match.arg(dgp)
-  minp <- .minp[dgp]
-  if (!is.null(X)) {
-    p <- NCOL(X)
-    n <- NROW(X)
-  }
-  if (p < minp) {
-    stop(paste("Selected dgp", dgp, "requires a minimum of", minp, "variables."))
-  }
-
-  if (dgp == "simple1") {
-    if (is.null(tau)) {
-      tau <- 1
-    }
-    if (is.null(X)) {
-      X <- matrix(runif(n * p), n, p)
-    }
-    W <- rbinom(n, 1, 0.5)
-    failure.time <- pmin(rexp(n) * X[, 1] + W, tau)
-    censor.time <- 2 * runif(n)
-    Y <- pmin(failure.time, censor.time)
-    D <- as.integer(failure.time <= censor.time)
-    temp <- rexp(n.mc)
-    cate <- rep(NA, n)
-    for (i in 1:n) {
-      cate[i] <- mean(pmin(temp * X[i, 1] + 1, tau) - pmin(temp * X[i, 1], tau))
-    }
-    cate.sign = rep(1, n)
-  } else if (dgp == "type1") {
-    # Type 1 from https://arxiv.org/abs/2001.09887 (Cox PH censor time)
-    if (is.null(tau)) {
-      tau <- 1.5
-    }
-    if (is.null(X)) {
-      X <- matrix(runif(n * p), n, p)
-    }
-    e <- (1 + dbeta(X[, 1], 2, 4)) / 4
-    W <- rbinom(n, 1, e)
-    I1 <- X[,1 ] < 0.5
-    eps <- rnorm(n)
-    ft <- exp(-1.85 - 0.8 * I1 + 0.7 * sqrt(X[, 2]) + 0.2 * X[, 3] +
-                (0.7 - 0.4 * I1 - 0.4 * sqrt(X[, 2])) * W + eps)
-    failure.time <- pmin(ft, tau)
-    numerator <- -log(runif(n))
-    denominator <- exp(-1.75 - 0.5 * sqrt(X[, 2]) + 0.2 * X[, 3]  + (1.15 + 0.5 * I1 - 0.3 * sqrt(X[, 2])) * W)
-    censor.time <- (numerator / denominator)^(1/2)
-    Y <- pmin(failure.time, censor.time)
-    D <- as.integer(failure.time <= censor.time)
-    cate <- rep(NA, n)
-    eps <- rnorm(n.mc)
-    for (i in 1:n) {
-      ft0 <- exp(-1.85 - 0.8 * I1[i] + 0.7 * sqrt(X[i, 2]) + 0.2 * X[i, 3] + eps)
-      ft1 <- exp(-1.85 - 0.8 * I1[i] + 0.7 * sqrt(X[i, 2]) + 0.2 * X[i, 3] +
-                  0.7 - 0.4 * I1[i] - 0.4 * sqrt(X[i, 2]) + eps)
-      cate[i] <- mean(pmin(ft1, tau) - pmin(ft0, tau))
-    }
-    cate.sign <- sign(0.7 - 0.4 * I1 - 0.4 * sqrt(X[, 2]))
-  } else if (dgp == "type2") {
-    # Type 2 from https://arxiv.org/abs/2001.09887 (Cox PH failure time)
-    if (is.null(tau)) {
-      tau <- 2
-    }
-    if (is.null(X)) {
-      X <- matrix(runif(n * p), n, p)
-    }
-    e <- (1 + dbeta(X[, 1], 2, 4)) / 4
-    W <- rbinom(n, 1, e)
-    numerator <- -log(runif(n))
-    cox.ft <- (numerator / exp(X[,1] + (-0.4 + X[,2]) * W))^2
-    failure.time <- pmin(cox.ft, tau)
-    censor.time <- exp(X[1, ] - X[, 3] * W + rnorm(n))
-    Y <- pmin(failure.time, censor.time)
-    D <- as.integer(failure.time <= censor.time)
-    cate <- rep(NA, n)
-    numerator <- -log(runif(n.mc))
-    for (i in 1:n) {
-      cox.ft0 <- (numerator / exp(X[i, 1] + (-0.4 + X[i, 2]) * 0))^2
-      cox.ft1 <- (numerator / exp(X[i, 1] + (-0.4 + X[i, 2]) * 1))^2
-      cate[i] <- mean(pmin(cox.ft1, tau) - pmin(cox.ft0, tau))
-    }
-    cate.sign <- -sign(-0.4 + X[,2]) # Note: negative b/c of Cox model, larger is worse.
-  } else if (dgp == "type3") {
-    # Type 3 from https://arxiv.org/abs/2001.09887 (Poisson)
-    if (is.null(tau)) {
-      tau <- 15
-    }
-    if (is.null(X)) {
-      X <- matrix(runif(n * p), n, p)
-    }
-    e <- (1 + dbeta(X[, 1], 2, 4)) / 4
-    W <- rbinom(n, 1, e)
-    lambda.failure <- X[, 2]^2 + X[, 3] + 6 + 2 * (sqrt(X[, 1]) - 0.3) * W
-    failure.time <- pmin(rpois(n, lambda = lambda.failure), tau)
-    lambda.censor <- 12 + log(1 + exp(X[, 3]))
-    censor.time <- rpois(n, lambda = lambda.censor)
-    Y <- pmin(failure.time, censor.time)
-    D <- as.integer(failure.time <= censor.time)
-    cate <- rep(NA, n)
-    lambda.failure.0 <- X[, 2]^2 + X[, 3] + 6
-    lambda.failure.1 <- X[, 2]^2 + X[, 3] + 6 + 2 * (sqrt(X[, 1]) - 0.3)
-    for (i in 1:n) {
-      ft0 <- rpois(n.mc, lambda.failure.0[i])
-      ft1 <- rpois(n.mc, lambda.failure.1[i])
-      cate[i] <- mean(pmin(ft1, tau) - pmin(ft0, tau))
-    }
-    cate.sign <- sign(sqrt(X[, 1]) - 0.3)
-  } else if (dgp == "type4") {
-    # Type 4 from https://arxiv.org/abs/2001.09887 (Poisson)
-    if (is.null(tau)) {
-      tau <- 3
-    }
-    if (is.null(X)) {
-      X <- matrix(runif(n * p), n, p)
-    }
-    e <- 1 / ((1 + exp(-X[, 1])) * (1 + exp(-X[, 2])))
-    W <- rbinom(n, 1, e)
-    lambda.failure <- X[,2] + X[, 3] + pmax(0, X[, 1] - 0.3) * W
-    failure.time <- pmin(rpois(n, lambda = lambda.failure), tau)
-    lambda.censor <- 1 + log(1 + exp(X[, 3]))
-    censor.time <- rpois(n, lambda = lambda.censor)
-    Y <- pmin(failure.time, censor.time)
-    D <- as.integer(failure.time <= censor.time)
-    cate <- rep(NA, n)
-    lambda.failure.0 <- X[,2] + X[, 3]
-    lambda.failure.1 <- X[,2] + X[, 3] + pmax(0, X[, 1] - 0.3)
-    for (i in 1:n) {
-      ft0 <- rpois(n.mc, lambda.failure.0[i])
-      ft1 <- rpois(n.mc, lambda.failure.1[i])
-      cate[i] <- mean(pmin(ft1, tau) - pmin(ft0, tau))
-    }
-    cate.sign <- sign(pmax(0, X[, 1] - 0.3))
-    # For X1 < 0.3 the cate is zero so both (0, 1) are optimal, and we can ignore this subset.
-    cate.sign[X[, 1] < 0.3] <- NA
-  }
-
-  list(X = X, Y = Y, W = W, D = D, cate = cate, cate.sign = cate.sign, dgp = dgp, tau = tau)
 }
