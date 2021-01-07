@@ -1,10 +1,19 @@
-set.seed(2)
-
 rm(list = ls())
+# setwd("~/git/grf/experiments/instrumental_ci_test")
+setwd("H:/github/grf-1/experiments/aos19/instrumental_examples")
 
-setwd("~/git/grf/experiments/instrumental_examples")
+# packageurl <- "https://cran.r-project.org/src/contrib/Archive/grf/grf_0.9.6.tar.gz"
+# install.packages('DiceKriging', type='source')
+# install.packages('sandwich', type='source')
+# install.packages('Rcpp', type='source')
+# install.packages('RcppEigen', type='source')
+# install.packages(packageurl, repos=NULL, type="source")
 
 library(grf)
+library(future.apply)
+plan(multiprocess)
+set.seed(2)
+
 p = 20
 n = 4000
 num.trees = 10000

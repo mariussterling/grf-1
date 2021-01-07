@@ -1,8 +1,19 @@
 rm(list = ls())
+# setwd("~/git/grf/experiments/instrumental_ci_test")
+# setwd("H:/github/grf-1/experiments/aos19/instrumental_ci_test")
+setwd("/home/RDC/sterlimq/H:/sterlimq/github/grf-1/experiments/aos19/instrumental_ci_test")
 
-setwd("~/git/grf/experiments/instrumental_ci_test")
+# packageurl <- "https://cran.r-project.org/src/contrib/Archive/grf/grf_0.9.6.tar.gz"
+# install.packages('DiceKriging', type='source')
+# install.packages('sandwich', type='source')
+# install.packages('Rcpp', type='source')
+# install.packages('RcppEigen', type='source')
+# install.packages(packageurl, repos=NULL, type="source")
+
 
 library(grf)
+library(future.apply)
+plan(multiprocess)
 
 #
 #
@@ -31,6 +42,7 @@ for (alpha.mu in alpha.mu.vals) {
       for (k.tau in k.tau.vals) {
         for (p in p.vals) {
           for (n in n.vals) {
+            set.seed(42)
             
             p = max(p, k.tau + k.mu)
             
@@ -41,7 +53,8 @@ for (alpha.mu in alpha.mu.vals) {
               tau.true = alpha.tau * pmax(0, rowSums(X.test[,1:k.tau]))
             }
             
-            res.raw = lapply(1:REPS, function(rr) {
+            res.raw = future_lapply(1:REPS, function(rr) {
+              set.seed(rr)
               
               # DATA GENERATION
               X = matrix(rnorm(n * p), n, p)
